@@ -192,5 +192,3 @@ Clean Up:
 ```
 make delete - Delete local deployment
 ```
-
-# CI/CD Workflow
