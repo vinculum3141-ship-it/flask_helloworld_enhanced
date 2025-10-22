@@ -1,36 +1,255 @@
 name: Flask CI/CD Pipeline
 
+# Pipeline Triggers - defines when this workflow will run
 on:
+  # Automatic trigger on pushes to specific branches
   push:
     branches:
-      - main
+      - main          # Production branch - triggers full deployment pipeline
+      - develop       # Development branch - integration testing
+      - 'feature/**'  # Feature branches - early feedback during development
+      - 'hotfix/**'   # Hotfix branches - urgent production fixes
+  
+  # Automatic trigger on pull requests targeting main branches
+  pull_request:
+    branches:
+      - main          # PRs to production - thorough validation required
+      - develop       # PRs to development - integration validation
+  
+  # Manual trigger - allows on-demand pipeline execution with custom parameters
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment for deployment context'
+        required: false
+        default: 'test'
+        type: choice
+        options:
+          - test        # Test environment - safe for experimentation
+          - staging     # Staging environment - production-like testing
+          - production  # Production environment - live deployment
+      run_smoke_tests:
+        description: 'Run smoke tests - uncheck for faster pipeline execution'
+        required: false
+        default: true
+        type: boolean
+
+# Environment variables available to all jobs
+env:
+  PYTHON_VERSION: "3.11"
+  DOCKER_IMAGE_NAME: flask-k8s-app
+  REGISTRY: docker.io
 
 jobs:
   build-test:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30  # Prevent stuck jobs from running indefinitely
+    
+    # Security: Limit permissions to minimum required
+    permissions:
+      contents: read        # Read repository contents
+      actions: read         # Read workflow artifacts
+      pull-requests: write  # Comment on PRs with results
+    
+    # Environment variables for this job
+    env:
+      MINIKUBE_DRIVER: docker
+      KUBERNETES_VERSION: v1.28.0
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      # --- Step 1: Checkout the repo ---
+      - name: Checkout repository
+        uses: actions/checkout@v4  # Updated to latest version
+        timeout-minutes: 5
 
+      # --- Step 2: Setup Python with dependency caching ---
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5  # Updated to latest version
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'  # Automatically cache pip dependencies
+          cache-dependency-path: 'app/requirements.txt'
 
-      - name: Install dependencies
-        run: pip install -r app/requirements.txt pytest requests
-
-      - name: Run unit tests
-        run: pytest app/tests -v
+      # --- Step 3: Install dependencies (now with caching) ---
+      - name: Install Python dependencies
+        timeout-minutes: 10
+        run: |
+          pip install --upgrade pip
+          pip install -r app/requirements.txt pytest requests
+        
+      # --- Step 4: Setup Docker & Minikube ---
+      - name: Setup Docker with caching
+        uses: docker/setup-buildx-action@v3  # Updated to latest version
+        with:
+          driver-opts: |
+            image=moby/buildkit:buildx-stable-1
 
       - name: Start Minikube
-        uses: medyagh/setup-minikube@latest
+        uses: medyagh/setup-minikube@v0.0.16  # Pinned to stable version
+        timeout-minutes: 10
+        with:
+          minikube-version: 1.32.0
+          kubernetes-version: ${{ env.KUBERNETES_VERSION }}
+          driver: docker
+          cpus: 2
+          memory: 4g
+          
+      # --- Step 5: Setup Docker layer caching ---
+      - name: Setup Docker layer caching
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
 
-      - name: Build & Deploy
+      # --- Step 6: Build Docker Image ---
+      - name: Build Docker image
+        timeout-minutes: 15
         run: |
-          bash scripts/build_image.sh
-          bash scripts/deploy_local.sh
+          # Use buildx for better caching
+          docker buildx build \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
+            --load \
+            -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+            -t ${{ env.DOCKER_IMAGE_NAME }}:latest \
+            app/
+          
+          # Move cache to avoid ever-growing cache
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
+      # --- Step 7: Deploy app (skip for PRs) ---
+      - name: Deploy app
+        timeout-minutes: 10
+        if: ${{ github.event_name != 'pull_request' }}  # Skip deployment for PRs
+        run: bash scripts/deploy_local.sh
+
+      # --- Step 8: Wait for deployment readiness ---
+      - name: Wait for deployment to be ready
+        if: ${{ github.event_name != 'pull_request' }}
+        timeout-minutes: 5
+        run: |
+          echo "Waiting for pods to be ready..."
+          kubectl wait --for=condition=ready pod -l app=flask-k8s-app --timeout=300s
+          
+      # --- Step 9: Run Unit Tests ---
+      - name: Run unit tests
+        id: unit-tests
+        timeout-minutes: 10
+        continue-on-error: true  # Don't stop workflow if unit tests fail
+        run: bash scripts/unit_tests.sh
+
+      # --- Step 10: Run Kubernetes-level tests ---
       - name: Run Kubernetes tests
-        run: pytest tests_k8s -v
+        id: k8s-tests
+        timeout-minutes: 15
+        continue-on-error: true  # Don't stop workflow if K8s tests fail
+        run: bash scripts/k8s_tests.sh
+
+      # --- Step 11: Run Smoke Tests (conditional) ---
+      # Runs smoke tests by default, but can be skipped via manual trigger input
+      # Condition: Always run unless manually triggered with run_smoke_tests=false
+      - name: Run smoke tests
+        id: smoke-tests
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_smoke_tests == true }}
+        timeout-minutes: 10
+        continue-on-error: true  # Don't stop workflow if smoke tests fail
+        run: bash scripts/smoke_test.sh
+
+      # --- Step 12: Upload test artifacts ---
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()  # Upload even if tests failed
+        with:
+          name: test-results-${{ github.run_number }}
+          path: |
+            test-reports/
+            logs/
+            *.log
+          retention-days: 30
+
+      # --- Step 13: Cleanup (Always Runs) ---
+      # This step runs regardless of previous step failures to ensure resource cleanup
+      - name: Cleanup Minikube resources
+        if: always()  # Always run cleanup, even if previous steps failed
+        timeout-minutes: 5
+        run: bash scripts/delete_local.sh
+
+      # --- Step 14: Report Test Results ---
+      # Check if any tests failed and fail the workflow accordingly
+      - name: Check test results and report status
+        if: always()  # Always run to properly report final status
+        run: |
+          echo "=== 📊 Test Results Summary ==="
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Event: ${{ github.event_name }}"
+          echo ""
+          
+          # Check unit tests
+          if [[ "${{ steps.unit-tests.outcome }}" == "failure" ]]; then
+            echo "❌ Unit tests failed"
+            TESTS_FAILED=true
+          else
+            echo "✅ Unit tests passed"
+          fi
+          
+          # Check K8s tests
+          if [[ "${{ steps.k8s-tests.outcome }}" == "failure" ]]; then
+            echo "❌ Kubernetes tests failed"
+            TESTS_FAILED=true
+          else
+            echo "✅ Kubernetes tests passed"
+          fi
+          
+          # Check smoke tests (only if they were supposed to run)
+          if [[ "${{ steps.smoke-tests.outcome }}" == "failure" ]]; then
+            echo "❌ Smoke tests failed"
+            TESTS_FAILED=true
+          elif [[ "${{ steps.smoke-tests.outcome }}" == "success" ]]; then
+            echo "✅ Smoke tests passed"
+          else
+            echo "⏭️ Smoke tests skipped"
+          fi
+          
+          echo ""
+          
+          # Fail the workflow if any tests failed
+          if [[ "$TESTS_FAILED" == "true" ]]; then
+            echo "❌ Pipeline failed due to test failures"
+            echo "::error title=Tests Failed::One or more test suites failed. Check the logs above for details."
+            exit 1
+          else
+            echo "✅ All tests passed successfully! 🎉"
+            echo "::notice title=All Tests Passed::Pipeline completed successfully with all tests passing."
+          fi
+
+  # Security scanning job (runs in parallel)
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    
+    permissions:
+      contents: read
+      security-events: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
