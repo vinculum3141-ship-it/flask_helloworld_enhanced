@@ -1,6 +1,7 @@
 # Hello Flask on Kubernetes (Minikube + EKS Demo)
 
 This project demonstrates how to:
+
 * Build a simple Python/Flask app into a Docker container.
 * Deploy it to a local Kubernetes cluster using Minikube.
 * Run automated tests (unit + integration).
