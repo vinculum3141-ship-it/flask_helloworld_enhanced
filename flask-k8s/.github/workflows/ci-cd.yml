@@ -1,0 +1,36 @@
+name: Flask CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r app/requirements.txt pytest requests
+
+      - name: Run unit tests
+        run: pytest app/tests -v
+
+      - name: Start Minikube
+        uses: medyagh/setup-minikube@latest
+
+      - name: Build & Deploy
+        run: |
+          bash scripts/build_image.sh
+          bash scripts/deploy_local.sh
+
+      - name: Run Kubernetes tests
+        run: pytest tests_k8s -v
