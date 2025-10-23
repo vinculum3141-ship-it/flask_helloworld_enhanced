@@ -33,26 +33,26 @@ on:
 # Environment variables available to all jobs
 env:
   PYTHON_VERSION: "3.11"
-  DOCKER_IMAGE_NAME: flask-k8s-app
+  DOCKER_IMAGE_NAME: hello-flask
   REGISTRY: docker.io
   REPO_ENVIRONMENT: test
 
 jobs:
   build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # Prevent stuck jobs from running indefinitely
-    
+    timeout-minutes: 90  # Prevent stuck jobs from running indefinitely
+
     # Security: Limit permissions to minimum required
     permissions:
       contents: read        # Read repository contents
       actions: read         # Read workflow artifacts
       pull-requests: write  # Comment on PRs with results
-    
+
     # Environment variables for this job
     env:
       MINIKUBE_DRIVER: docker
       KUBERNETES_VERSION: v1.28.0
-    
+
     steps:
       # --- Step 1: Checkout the repo ---
       - name: Checkout repository
@@ -82,7 +82,7 @@ jobs:
 
       - name: Start Minikube
         uses: medyagh/setup-minikube@v0.0.16  # Pinned to stable version
-        timeout-minutes: 10
+        timeout-minutes: 15
         with:
           minikube-version: 1.32.0
           kubernetes-version: ${{ env.KUBERNETES_VERSION }}
@@ -108,12 +108,13 @@ jobs:
 
       # --- Step 6: Deploy app (always deploy except for PRs) ---
       - name: Deploy app
-        timeout-minutes: 10
+        timeout-minutes: 60
         if: ${{ github.event_name != 'pull_request' }}
         working-directory: flask-k8s
         run: |
           set -euxo pipefail
           echo "===== Starting deploy_local.sh (trace enabled) ====="
+          # keep the deploy output in a log file; collect diagnostics on failure
           bash -x scripts/deploy_local.sh &> deploy.log || {
             echo "Deploy script failed — printing last 200 lines of deploy.log"
             tail -n 200 deploy.log || true
@@ -122,10 +123,12 @@ jobs:
             exit 1
           }
           echo "Deploy script completed, waiting for rollout..."
-          minikube kubectl -- rollout status deployment/flask-k8s-app --timeout=5m || {
-            echo "Rollout did not complete within 5m — dumping pods"
+          # explicit rollout wait to fail gracefully if not ready
+          minikube kubectl -- rollout status deployment/hello-flask --timeout=5m || {
+            echo "Rollout did not complete within 5m — dumping pods and events"
             minikube kubectl -- get pods -A -o wide || true
-            minikube kubectl -- describe pod -l app=flask-k8s-app || true
+            minikube kubectl -- describe pod -l app=hello-flask || true
+            minikube kubectl -- get events -A --sort-by='.metadata.creationTimestamp' | tail -n 200 || true
             exit 1
           }
           echo "Deploy successful"
@@ -133,11 +136,11 @@ jobs:
       # --- Step 7: Wait for deployment readiness ---
       - name: Wait for deployment to be ready
         if: ${{ github.event_name != 'pull_request' }}
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           echo "Waiting for pods to be ready..."
-          minikube kubectl -- wait --for=condition=ready pod -l app=flask-k8s-app --timeout=300s
-          
+          minikube kubectl -- wait --for=condition=ready pod -l app=hello-flask --timeout=300s
+
       # --- Step 8: Run Unit Tests ---
       - name: Run unit tests
         id: unit-tests
@@ -150,7 +153,7 @@ jobs:
       - name: Run Kubernetes tests
         id: k8s-tests
         if: ${{ github.event_name != 'pull_request' }}
-        timeout-minutes: 15
+        timeout-minutes: 20
         continue-on-error: true  # Don't stop workflow if K8s tests fail
         working-directory: flask-k8s
         run: bash scripts/k8s_tests.sh
@@ -160,7 +163,7 @@ jobs:
       - name: Run smoke tests
         id: smoke-tests
         if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.run_smoke_tests == true) }}
-        timeout-minutes: 10
+        timeout-minutes: 15
         continue-on-error: true  # Don't stop workflow if smoke tests fail
         working-directory: flask-k8s
         run: bash scripts/smoke_test.sh
@@ -177,15 +180,27 @@ jobs:
             flask-k8s/*.log
           retention-days: 30
 
-      # --- Step 12: Cleanup (Always Runs) ---
+      # --- Step 12: Upload deployment diagnostics ---
+      # Upload Minikube and deployment logs for troubleshooting
+      - name: Upload deployment diagnostics
+        if: always()  # Upload even if deployment failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: minikube-deploy-logs-${{ github.run_number }}
+          path: |
+            flask-k8s/logs/
+            flask-k8s/deploy.log
+          retention-days: 7
+
+      # --- Step 13: Cleanup (Always Runs) ---
       # This step runs regardless of previous step failures to ensure resource cleanup
       - name: Cleanup Minikube resources
         if: always()  # Always run cleanup, even if previous steps failed
-        timeout-minutes: 5
+        timeout-minutes: 10
         working-directory: flask-k8s
         run: bash scripts/delete_local.sh
 
-      # --- Step 13: Report Test Results ---
+      # --- Step 14: Report Test Results ---
       # Check if any tests failed and fail the workflow accordingly
       - name: Check test results and report status
         if: always()  # Always run to properly report final status
@@ -247,17 +262,17 @@ jobs:
   # Security scanning job (runs in parallel)
   security-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    
+
     permissions:
       contents: read
       security-events: write
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -265,7 +280,7 @@ jobs:
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
-          
+
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
         if: always()

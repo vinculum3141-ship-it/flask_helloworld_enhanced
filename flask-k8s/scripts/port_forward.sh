@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 port_forward_app() {
     echo "[INFO] Forwarding port 5000 from hello-flask service to localhost..."
@@ -15,7 +15,7 @@ port_forward_app() {
     curl -s http://localhost:5000 || echo "[ERROR] Curl failed"
 
     echo "[INFO] Killing port forward process..."
-    kill $PORT_FORWARD_PID
+    kill $PORT_FORWARD_PID || true
 
     echo "[INFO] Done!"
 }

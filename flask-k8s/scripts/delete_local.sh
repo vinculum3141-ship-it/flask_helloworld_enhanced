@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 cleanup_app() {
     echo "[INFO] Deleting Service, Deployment, ConfigMap, Secret..."
