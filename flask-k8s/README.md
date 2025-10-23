@@ -26,7 +26,7 @@ Make sure you have installed:
 Also, ensure Python packages for testing are installed:
 
 ```
-pip install -r app/requirements.txt
+pip install -r app/requirements.txt pytest requests
 ```
 
 ## Start Minikube
@@ -192,5 +192,3 @@ Clean Up:
 ```
 make delete - Delete local deployment
 ```
-
-# CI/CD Workflow
