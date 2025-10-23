@@ -24,11 +24,6 @@ on:
         required: false
         default: true
         type: boolean
-      skip_deployment:
-        description: 'Skip Kubernetes deployment (testing only mode)'
-        required: false
-        default: false
-        type: boolean
       demo_message:
         description: 'Custom message for demo (optional)'
         required: false
@@ -111,10 +106,10 @@ jobs:
             -t ${{ env.DOCKER_IMAGE_NAME }}:latest \
             app/
 
-      # --- Step 6: Deploy app (skip for PRs or if manually skipped) ---
+      # --- Step 6: Deploy app (always deploy except for PRs) ---
       - name: Deploy app
         timeout-minutes: 10
-        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.skip_deployment != true) }}
+        if: ${{ github.event_name != 'pull_request' }}
         working-directory: flask-k8s
         run: |
           set -euxo pipefail
@@ -137,7 +132,7 @@ jobs:
 
       # --- Step 7: Wait for deployment readiness ---
       - name: Wait for deployment to be ready
-        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.skip_deployment != true) }}
+        if: ${{ github.event_name != 'pull_request' }}
         timeout-minutes: 5
         run: |
           echo "Waiting for pods to be ready..."
@@ -151,20 +146,20 @@ jobs:
         working-directory: flask-k8s
         run: bash scripts/unit_tests.sh
 
-      # --- Step 9: Run Kubernetes tests ---
+      # --- Step 9: Run Kubernetes tests (skip for PRs) ---
       - name: Run Kubernetes tests
         id: k8s-tests
+        if: ${{ github.event_name != 'pull_request' }}
         timeout-minutes: 15
         continue-on-error: true  # Don't stop workflow if K8s tests fail
         working-directory: flask-k8s
         run: bash scripts/k8s_tests.sh
 
       # --- Step 10: Run Smoke Tests (conditional) ---
-      # Runs smoke tests by default, but can be skipped via manual trigger input
-      # Condition: Always run unless manually triggered with run_smoke_tests=false
+      # Skip for PRs, runs for pushes and manual triggers (unless disabled)
       - name: Run smoke tests
         id: smoke-tests
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_smoke_tests == true }}
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.run_smoke_tests == true) }}
         timeout-minutes: 10
         continue-on-error: true  # Don't stop workflow if smoke tests fail
         working-directory: flask-k8s
@@ -200,11 +195,10 @@ jobs:
           echo "Branch: ${{ github.ref_name }}"
           echo "Commit: ${{ github.sha }}"
           echo "Event: ${{ github.event_name }}"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "🚀 PR Mode: Running unit tests only (fast validation)"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "Demo Message: ${{ inputs.demo_message }}"
-            if [[ "${{ inputs.skip_deployment }}" == "true" ]]; then
-              echo "⚠️ Deployment was skipped (testing-only mode)"
-            fi
           fi
           echo ""
           
@@ -216,16 +210,20 @@ jobs:
             echo "✅ Unit tests passed"
           fi
           
-          # Check K8s tests
-          if [[ "${{ steps.k8s-tests.outcome }}" == "failure" ]]; then
+          # Check K8s tests (skipped for PRs)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "⏭️ Kubernetes tests skipped (PR mode - unit tests only)"
+          elif [[ "${{ steps.k8s-tests.outcome }}" == "failure" ]]; then
             echo "❌ Kubernetes tests failed"
             TESTS_FAILED=true
           else
             echo "✅ Kubernetes tests passed"
           fi
           
-          # Check smoke tests (only if they were supposed to run)
-          if [[ "${{ steps.smoke-tests.outcome }}" == "failure" ]]; then
+          # Check smoke tests (skipped for PRs and when manually disabled)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "⏭️ Smoke tests skipped (PR mode - unit tests only)"
+          elif [[ "${{ steps.smoke-tests.outcome }}" == "failure" ]]; then
             echo "❌ Smoke tests failed"
             TESTS_FAILED=true
           elif [[ "${{ steps.smoke-tests.outcome }}" == "success" ]]; then
