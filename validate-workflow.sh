@@ -153,7 +153,7 @@ echo "🔍 Step 4: Referenced Scripts Validation"
 echo "---------------------------------------"
 echo "Checking if referenced scripts exist:"
 
-SCRIPTS=($(grep -o "scripts/[a-zA-Z_]*.sh" "$WORKFLOW_FILE" 2>/dev/null | sort -u || true))
+SCRIPTS=($(grep -o "scripts/[a-zA-Z_][a-zA-Z0-9_-]*\.sh" "$WORKFLOW_FILE" 2>/dev/null | sort -u || true))
 if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
     echo "⚠️  No script references found in workflow"
 else
