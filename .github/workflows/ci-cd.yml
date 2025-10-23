@@ -76,11 +76,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # Safe Python virtualenv restore. If cache is unavailable or from a fork, this is skipped and the next step will create the venv.
+      - name: Restore Python virtualenv (safe)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: flask-k8s/.venv
+          key: ${{ runner.os }}-venv-py${{ env.PYTHON_VERSION }}-${{ hashFiles('flask-k8s/app/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-py${{ env.PYTHON_VERSION }}-
+
       # --- Step 3: Install dependencies ---
-      - name: Install Python dependencies
+      - name: Install Python dependencies (venv)
         timeout-minutes: 10
         working-directory: flask-k8s
         run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+          source .venv/bin/activate
           pip install --upgrade pip
           pip install -r app/requirements.txt pytest requests
         
@@ -308,7 +322,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # Cache Trivy vulnerability database to speed up scans (safe)
+      - name: Restore Trivy DB cache (safe)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: ~/.cache/trivy
+          key: ${{ runner.os }}-trivy-db
+          restore-keys: |
+            ${{ runner.os }}-trivy-
+
       - name: Run Trivy vulnerability scanner
+        env:
+          TRIVY_CACHE_DIR: ~/.cache/trivy
         # uses: aquasecurity/trivy-action@0.28.0  # previous version (commented)
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # 0.33.1
         with:
