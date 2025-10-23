@@ -19,26 +19,28 @@ on:
   # Manual trigger - allows on-demand pipeline execution with custom parameters
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Target environment for deployment context'
-        required: false
-        default: 'test'
-        type: choice
-        options:
-          - test        # Test environment - safe for experimentation
-          - staging     # Staging environment - production-like testing
-          - production  # Production environment - live deployment
       run_smoke_tests:
         description: 'Run smoke tests - uncheck for faster pipeline execution'
         required: false
         default: true
         type: boolean
+      skip_deployment:
+        description: 'Skip Kubernetes deployment (testing only mode)'
+        required: false
+        default: false
+        type: boolean
+      demo_message:
+        description: 'Custom message for demo (optional)'
+        required: false
+        default: 'Manual demo run'
+        type: string
 
 # Environment variables available to all jobs
 env:
   PYTHON_VERSION: "3.11"
   DOCKER_IMAGE_NAME: flask-k8s-app
   REGISTRY: docker.io
+  REPO_ENVIRONMENT: test
 
 jobs:
   build-test:
@@ -122,16 +124,16 @@ jobs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
-      # --- Step 7: Deploy app (skip for PRs) ---
+      # --- Step 7: Deploy app (skip for PRs or if manually skipped) ---
       - name: Deploy app
         timeout-minutes: 10
-        if: ${{ github.event_name != 'pull_request' }}  # Skip deployment for PRs
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.skip_deployment != true) }}
         working-directory: flask-k8s
         run: bash scripts/deploy_local.sh
 
       # --- Step 8: Wait for deployment readiness ---
       - name: Wait for deployment to be ready
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.skip_deployment != true) }}
         timeout-minutes: 5
         run: |
           echo "Waiting for pods to be ready..."
@@ -190,9 +192,16 @@ jobs:
         if: always()  # Always run to properly report final status
         run: |
           echo "=== 📊 Test Results Summary ==="
+          echo "Repository Environment: ${{ env.REPO_ENVIRONMENT }}"
           echo "Branch: ${{ github.ref_name }}"
           echo "Commit: ${{ github.sha }}"
           echo "Event: ${{ github.event_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Demo Message: ${{ inputs.demo_message }}"
+            if [[ "${{ inputs.skip_deployment }}" == "true" ]]; then
+              echo "⚠️ Deployment was skipped (testing-only mode)"
+            fi
+          fi
           echo ""
           
           # Check unit tests
