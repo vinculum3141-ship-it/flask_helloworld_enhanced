@@ -92,7 +92,7 @@ jobs:
           
       # --- Step 5: Build Docker Image ---
       - name: Build Docker image
-        timeout-minutes: 15
+        timeout-minutes: 20
         working-directory: flask-k8s
         run: |
           set -euxo pipefail
@@ -118,14 +118,14 @@ jobs:
             echo "Deploy script failed — printing last 200 lines of deploy.log"
             tail -n 200 deploy.log || true
             echo "Cluster PODS:"
-            kubectl get pods -A -o wide || true
+            minikube kubectl -- get pods -A -o wide || true
             exit 1
           }
           echo "Deploy script completed, waiting for rollout..."
-          kubectl rollout status deployment/flask-k8s-app --timeout=5m || {
+          minikube kubectl -- rollout status deployment/flask-k8s-app --timeout=5m || {
             echo "Rollout did not complete within 5m — dumping pods"
-            kubectl get pods -A -o wide || true
-            kubectl describe pod -l app=flask-k8s-app || true
+            minikube kubectl -- get pods -A -o wide || true
+            minikube kubectl -- describe pod -l app=flask-k8s-app || true
             exit 1
           }
           echo "Deploy successful"
@@ -136,7 +136,7 @@ jobs:
         timeout-minutes: 5
         run: |
           echo "Waiting for pods to be ready..."
-          kubectl wait --for=condition=ready pod -l app=flask-k8s-app --timeout=300s
+          minikube kubectl -- wait --for=condition=ready pod -l app=flask-k8s-app --timeout=300s
           
       # --- Step 8: Run Unit Tests ---
       - name: Run unit tests

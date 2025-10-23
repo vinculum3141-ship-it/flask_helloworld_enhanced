@@ -4,7 +4,7 @@ set -e
 port_forward_app() {
     echo "[INFO] Forwarding port 5000 from hello-flask service to localhost..."
     echo "[INFO] Starting port forward in background..."
-    kubectl port-forward svc/hello-flask 5000:5000 &
+    minikube kubectl -- port-forward svc/hello-flask 5000:5000 &
     PORT_FORWARD_PID=$!
 
     echo "[INFO] Port forward PID: $PORT_FORWARD_PID"
