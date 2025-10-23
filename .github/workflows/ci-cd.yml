@@ -95,9 +95,15 @@ jobs:
       - name: Prepare buildx cache dirs
         run: mkdir -p /tmp/.buildx-cache /tmp/.buildx-cache-new
 
+      # Caching note:
+      # We point the Docker CLI at Minikube's docker daemon (eval "$(minikube -p minikube docker-env)").
+      # This uses the buildx "docker" driver, which DOES NOT support exporting/importing cache to a local directory
+      # (type=local). Attempting to use --cache-to/--cache-from with type=local causes buildx to exit with:
+      #   "Cache export is not supported for the docker driver. Switch to a different driver, or turn on the containerd image store..."
+      # The restore step is kept here for future use if we switch to a cache-capable driver; it is guarded and non-blocking.
       # Safe Docker layer cache restore (optional). Guarded so it won't fail on forks or when cache is unavailable.
       - name: Restore Docker layer cache (safe)
-        if: ${{ env.ACTIONS_CACHE_URL != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: actions/cache@v4
         continue-on-error: true
         with:
@@ -127,18 +133,13 @@ jobs:
           # Point Docker CLI to Minikube's docker daemon so the image is built directly into Minikube
           eval "$(minikube -p minikube docker-env)"
 
-          # Build Docker image with buildx and optional layer caching
-          docker buildx build \
-            --cache-from type=local,src=/tmp/.buildx-cache \
-            --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
-            --load \
+          # Build Docker image WITHOUT buildx cache flags.
+          # Reason: With the docker driver (Minikube's docker daemon), buildx does not support local cache export/import,
+          # which causes failures when using --cache-to/--cache-from type=local. Using plain `docker build` avoids that.
+          docker build \
             -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
             -t ${{ env.DOCKER_IMAGE_NAME }}:latest \
             app/
-
-          # Rotate cache directories (safe even if empty)
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       # --- Step 6: Deploy app (always deploy except for PRs) ---
       - name: Deploy app
