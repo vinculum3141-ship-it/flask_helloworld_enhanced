@@ -100,6 +100,11 @@ jobs:
         timeout-minutes: 15
         working-directory: flask-k8s
         run: |
+          set -euxo pipefail
+          echo "Configuring shell to use Minikube's docker daemon"
+          # Point Docker CLI to Minikube's docker daemon so the image is built directly into Minikube
+          eval "$(minikube -p minikube docker-env)"
+
           # Build Docker image with simple tags
           docker build \
             -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
@@ -111,7 +116,24 @@ jobs:
         timeout-minutes: 10
         if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.skip_deployment != true) }}
         working-directory: flask-k8s
-        run: bash scripts/deploy_local.sh
+        run: |
+          set -euxo pipefail
+          echo "===== Starting deploy_local.sh (trace enabled) ====="
+          bash -x scripts/deploy_local.sh &> deploy.log || {
+            echo "Deploy script failed — printing last 200 lines of deploy.log"
+            tail -n 200 deploy.log || true
+            echo "Cluster PODS:"
+            kubectl get pods -A -o wide || true
+            exit 1
+          }
+          echo "Deploy script completed, waiting for rollout..."
+          kubectl rollout status deployment/flask-k8s-app --timeout=5m || {
+            echo "Rollout did not complete within 5m — dumping pods"
+            kubectl get pods -A -o wide || true
+            kubectl describe pod -l app=flask-k8s-app || true
+            exit 1
+          }
+          echo "Deploy successful"
 
       # --- Step 7: Wait for deployment readiness ---
       - name: Wait for deployment to be ready
