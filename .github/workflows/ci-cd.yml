@@ -65,6 +65,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # Safe pip cache restore (optional). Guarded so it won't fail on forks or when cache is unavailable.
+      - name: Restore pip cache (safe)
+        if: ${{ env.ACTIONS_CACHE_URL != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('flask-k8s/app/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       # --- Step 3: Install dependencies ---
       - name: Install Python dependencies
         timeout-minutes: 10
@@ -79,6 +90,21 @@ jobs:
         with:
           driver-opts: |
             image=moby/buildkit:buildx-stable-1
+
+      # Prepare buildx cache directories so build works even without a restored cache
+      - name: Prepare buildx cache dirs
+        run: mkdir -p /tmp/.buildx-cache /tmp/.buildx-cache-new
+
+      # Safe Docker layer cache restore (optional). Guarded so it won't fail on forks or when cache is unavailable.
+      - name: Restore Docker layer cache (safe)
+        if: ${{ env.ACTIONS_CACHE_URL != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
 
       - name: Start Minikube
         # uses: medyagh/setup-minikube@v0.0.16  # previous version (commented)
@@ -101,11 +127,18 @@ jobs:
           # Point Docker CLI to Minikube's docker daemon so the image is built directly into Minikube
           eval "$(minikube -p minikube docker-env)"
 
-          # Build Docker image with simple tags
-          docker build \
+          # Build Docker image with buildx and optional layer caching
+          docker buildx build \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
+            --load \
             -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
             -t ${{ env.DOCKER_IMAGE_NAME }}:latest \
             app/
+
+          # Rotate cache directories (safe even if empty)
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       # --- Step 6: Deploy app (always deploy except for PRs) ---
       - name: Deploy app
