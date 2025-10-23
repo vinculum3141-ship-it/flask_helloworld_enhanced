@@ -64,15 +64,13 @@ jobs:
         uses: actions/checkout@v4  # Updated to latest version
         timeout-minutes: 5
 
-      # --- Step 2: Setup Python with dependency caching ---
+      # --- Step 2: Setup Python ---
       - name: Set up Python
         uses: actions/setup-python@v5  # Updated to latest version
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'  # Automatically cache pip dependencies
-          cache-dependency-path: 'flask-k8s/app/requirements.txt'
 
-      # --- Step 3: Install dependencies (now with caching) ---
+      # --- Step 3: Install dependencies ---
       - name: Install Python dependencies
         timeout-minutes: 10
         working-directory: flask-k8s
@@ -81,8 +79,8 @@ jobs:
           pip install -r app/requirements.txt pytest requests
         
       # --- Step 4: Setup Docker & Minikube ---
-      - name: Setup Docker with caching
-        uses: docker/setup-buildx-action@v3  # Updated to latest version
+      - name: Setup Docker
+        uses: docker/setup-buildx-action@v3
         with:
           driver-opts: |
             image=moby/buildkit:buildx-stable-1
@@ -97,41 +95,25 @@ jobs:
           cpus: 2
           memory: 4g
           
-      # --- Step 5: Setup Docker layer caching ---
-      - name: Setup Docker layer caching
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-
-      # --- Step 6: Build Docker Image ---
+      # --- Step 5: Build Docker Image ---
       - name: Build Docker image
         timeout-minutes: 15
         working-directory: flask-k8s
         run: |
-          # Use buildx for better caching
-          docker buildx build \
-            --cache-from type=local,src=/tmp/.buildx-cache \
-            --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
-            --load \
+          # Build Docker image with simple tags
+          docker build \
             -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
             -t ${{ env.DOCKER_IMAGE_NAME }}:latest \
             app/
-          
-          # Move cache to avoid ever-growing cache
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
-      # --- Step 7: Deploy app (skip for PRs or if manually skipped) ---
+      # --- Step 6: Deploy app (skip for PRs or if manually skipped) ---
       - name: Deploy app
         timeout-minutes: 10
         if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.skip_deployment != true) }}
         working-directory: flask-k8s
         run: bash scripts/deploy_local.sh
 
-      # --- Step 8: Wait for deployment readiness ---
+      # --- Step 7: Wait for deployment readiness ---
       - name: Wait for deployment to be ready
         if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.skip_deployment != true) }}
         timeout-minutes: 5
@@ -139,7 +121,7 @@ jobs:
           echo "Waiting for pods to be ready..."
           kubectl wait --for=condition=ready pod -l app=flask-k8s-app --timeout=300s
           
-      # --- Step 9: Run Unit Tests ---
+      # --- Step 8: Run Unit Tests ---
       - name: Run unit tests
         id: unit-tests
         timeout-minutes: 10
@@ -147,7 +129,7 @@ jobs:
         working-directory: flask-k8s
         run: bash scripts/unit_tests.sh
 
-      # --- Step 10: Run Kubernetes-level tests ---
+      # --- Step 9: Run Kubernetes tests ---
       - name: Run Kubernetes tests
         id: k8s-tests
         timeout-minutes: 15
@@ -155,7 +137,7 @@ jobs:
         working-directory: flask-k8s
         run: bash scripts/k8s_tests.sh
 
-      # --- Step 11: Run Smoke Tests (conditional) ---
+      # --- Step 10: Run Smoke Tests (conditional) ---
       # Runs smoke tests by default, but can be skipped via manual trigger input
       # Condition: Always run unless manually triggered with run_smoke_tests=false
       - name: Run smoke tests
@@ -166,7 +148,7 @@ jobs:
         working-directory: flask-k8s
         run: bash scripts/smoke_test.sh
 
-      # --- Step 12: Upload test artifacts ---
+      # --- Step 11: Upload test artifacts ---
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()  # Upload even if tests failed
@@ -178,7 +160,7 @@ jobs:
             flask-k8s/*.log
           retention-days: 30
 
-      # --- Step 13: Cleanup (Always Runs) ---
+      # --- Step 12: Cleanup (Always Runs) ---
       # This step runs regardless of previous step failures to ensure resource cleanup
       - name: Cleanup Minikube resources
         if: always()  # Always run cleanup, even if previous steps failed
@@ -186,7 +168,7 @@ jobs:
         working-directory: flask-k8s
         run: bash scripts/delete_local.sh
 
-      # --- Step 14: Report Test Results ---
+      # --- Step 13: Report Test Results ---
       # Check if any tests failed and fail the workflow accordingly
       - name: Check test results and report status
         if: always()  # Always run to properly report final status
