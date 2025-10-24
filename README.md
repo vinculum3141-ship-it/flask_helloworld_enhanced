@@ -101,7 +101,7 @@ The current pipeline will trigger on every push to a feature branch as well as e
     * ✅ Detailed status reporting
     * ✅ Continue-on-error for tests
     * ✅ GitHub annotations
-6) Production-Ready Features
+6. Production-Ready Features
     * ⚠️ Environment-aware behavior
     * ✅ Resource management
     * ✅ Comprehensive testing sequence
