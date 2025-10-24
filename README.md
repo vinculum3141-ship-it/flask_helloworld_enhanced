@@ -85,7 +85,7 @@ The current pipeline will trigger on every push to a feature branch as well as e
     * ❌ Pip dependency caching
     * ❌ Docker layer caching
     * ✅ Updated actions
-    ✅ Parallel jobs
+    * ✅ Parallel jobs
 3. Reliability & Resilience
     * ✅ Step timeouts
     * ✅ Job timeout
