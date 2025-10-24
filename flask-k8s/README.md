@@ -70,13 +70,14 @@ kubectl get svc
 
 Wait until Pods show `STATUS=Running`.
 ```
-kubectl get pods -l app=hello-flask
-kubectl describe pod <one-pod-name> | grep Status
+kubectl get pods -o wide -l app=hello-flask
+kubectl logs deploy/hello-flask
 ```
 If ConfigMap and Secret was deployed, confirm environment variables inside a running Pod:
 ```
 POD=$(kubectl get pods -l app=hello-flask -o jsonpath="{.items[0].metadata.name}")
 echo $POD
+kubectl describe pod $POD | grep Status
 kubectl exec -it $POD -- env | grep -E 'APP_ENV|LOG_LEVEL|API_KEY|DB_PASSWORD|CUSTOM_MESSAGE'
 ```
 
