@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Keep GitHub Actions up to date (workflow actions)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"   # daily | weekly | monthly
+      day: "monday"        # only used for weekly/monthly
+      time: "09:00"        # UTC
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - github-actions
+
+  # Keep Python dependencies up to date (requirements.txt)
+  - package-ecosystem: "pip"
+    directory: "/flask-k8s/app"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"        # UTC
+    # Prefer updating direct (top-level) deps by default
+    allow:
+      - dependency-type: "direct"
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - python
+      - pip
