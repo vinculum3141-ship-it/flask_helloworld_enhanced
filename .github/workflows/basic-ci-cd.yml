@@ -1,0 +1,274 @@
+name: Basic CI/CD Pipeline
+
+# Pipeline Triggers - defines when this workflow will run
+on:
+  # Automatic trigger on pushes to specific branches
+  push:
+    branches:
+      - main          # Production branch - triggers full deployment pipeline
+      - develop       # Development branch - integration testing
+      - 'feature/**'  # Feature branches - early feedback during development
+      - 'hotfix/**'   # Hotfix branches - urgent production fixes
+  
+  # Automatic trigger on pull requests targeting main branches
+  pull_request:
+    branches:
+      - main          # PRs to production - thorough validation required
+      - develop       # PRs to development - integration validation
+  
+  # Manual trigger - allows on-demand pipeline execution with custom parameters
+  workflow_dispatch:
+    inputs:
+      demo_message:
+        description: 'Custom message for demo (optional)'
+        required: false
+        default: 'Manual demo run'
+        type: string
+
+# Environment variables available to all jobs
+env:
+  PYTHON_VERSION: "3.11"
+  DOCKER_IMAGE_NAME: hello-flask
+  REGISTRY: docker.io
+  REPO_ENVIRONMENT: test
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90  # Prevent stuck jobs from running indefinitely
+
+    # Security: Limit permissions to minimum required
+    permissions:
+      contents: read        # Read repository contents
+      actions: read         # Read workflow artifacts
+      pull-requests: write  # Comment on PRs with results
+
+    # Environment variables for this job
+    env:
+      MINIKUBE_DRIVER: docker
+      KUBERNETES_VERSION: v1.28.0
+
+    steps:
+      # --- Step 1: Checkout the repo ---
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        timeout-minutes: 5
+
+      # --- Step 2: Setup Python ---
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # --- Step 3: Install dependencies ---
+      - name: Install Python dependencies
+        timeout-minutes: 10
+        working-directory: flask-k8s
+        run: |
+          pip install --upgrade pip
+          pip install -r app/requirements.txt pytest requests
+        
+      # --- Step 4: Setup Docker & Minikube ---
+      - name: Setup Docker
+        uses: docker/setup-buildx-action@v3.11.1
+        with:
+          driver-opts: |
+            image=moby/buildkit:buildx-stable-1
+
+      - name: Start Minikube
+        uses: medyagh/setup-minikube@v0.0.19
+        timeout-minutes: 15
+        with:
+          minikube-version: 1.32.0
+          kubernetes-version: ${{ env.KUBERNETES_VERSION }}
+          driver: docker
+          cpus: 2
+          memory: 4g
+          
+      # --- Step 5: Build Docker Image ---
+      - name: Build Docker image
+        timeout-minutes: 20
+        working-directory: flask-k8s
+        run: |
+          set -euxo pipefail
+          echo "Configuring shell to use Minikube's docker daemon"
+          # Point Docker CLI to Minikube's docker daemon so the image is built directly into Minikube
+          eval "$(minikube -p minikube docker-env)"
+
+          # Build Docker image with simple tags
+          docker build \
+            -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+            -t ${{ env.DOCKER_IMAGE_NAME }}:latest \
+            app/
+
+      # --- Step 6: Deploy app ---
+      - name: Deploy app
+        timeout-minutes: 60
+        working-directory: flask-k8s
+        run: |
+          set -euxo pipefail
+          echo "===== Starting deploy_local.sh (trace enabled) ====="
+          # keep the deploy output in a log file; collect diagnostics on failure
+          bash -x scripts/deploy_local.sh &> deploy.log || {
+            echo "Deploy script failed — printing last 200 lines of deploy.log"
+            tail -n 200 deploy.log || true
+            echo "Cluster PODS:"
+            minikube kubectl -- get pods -A -o wide || true
+            exit 1
+          }
+          echo "Deploy script completed, waiting for rollout..."
+          # explicit rollout wait to fail gracefully if not ready
+          minikube kubectl -- rollout status deployment/hello-flask --timeout=5m || {
+            echo "Rollout did not complete within 5m — dumping pods and events"
+            minikube kubectl -- get pods -A -o wide || true
+            minikube kubectl -- describe pod -l app=hello-flask || true
+            minikube kubectl -- get events -A --sort-by='.metadata.creationTimestamp' | tail -n 200 || true
+            exit 1
+          }
+          echo "Deploy successful"
+
+      # --- Step 7: Wait for deployment readiness ---
+      - name: Wait for deployment to be ready
+        timeout-minutes: 10
+        run: |
+          echo "Waiting for pods to be ready..."
+          minikube kubectl -- wait --for=condition=ready pod -l app=hello-flask --timeout=300s
+
+      # --- Step 8: Run Unit Tests ---
+      - name: Run unit tests
+        id: unit-tests
+        timeout-minutes: 10
+        continue-on-error: true  # Don't stop workflow if unit tests fail
+        working-directory: flask-k8s
+        run: bash scripts/unit_tests.sh
+
+      # --- Step 9: Run Kubernetes tests ---
+      - name: Run Kubernetes tests
+        id: k8s-tests
+        timeout-minutes: 20
+        continue-on-error: true  # Don't stop workflow if K8s tests fail
+        working-directory: flask-k8s
+        run: bash scripts/k8s_tests.sh
+
+      # --- Step 10: Run Smoke Tests ---
+      - name: Run smoke tests
+        id: smoke-tests
+        timeout-minutes: 15
+        continue-on-error: true  # Don't stop workflow if smoke tests fail
+        working-directory: flask-k8s
+        run: bash scripts/smoke_test.sh
+
+      # --- Step 11: Upload test artifacts ---
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()  # Upload even if tests failed
+        with:
+          name: test-results-${{ github.run_number }}
+          path: |
+            flask-k8s/test-reports/
+            flask-k8s/logs/
+            flask-k8s/*.log
+          retention-days: 30
+
+      # --- Step 12: Upload deployment diagnostics ---
+      # Upload Minikube and deployment logs for troubleshooting
+      - name: Upload deployment diagnostics
+        if: always()  # Upload even if deployment failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: minikube-deploy-logs-${{ github.run_number }}
+          path: |
+            flask-k8s/logs/
+            flask-k8s/deploy.log
+          retention-days: 7
+
+      # --- Step 13: Cleanup (Always Runs) ---
+      # This step runs regardless of previous step failures to ensure resource cleanup
+      - name: Cleanup Minikube resources
+        if: always()  # Always run cleanup, even if previous steps failed
+        timeout-minutes: 10
+        working-directory: flask-k8s
+        run: bash scripts/delete_local.sh
+
+      # --- Step 14: Report Test Results ---
+      # Check if any tests failed and fail the workflow accordingly
+      - name: Check test results and report status
+        if: always()  # Always run to properly report final status
+        run: |
+          echo "=== 📊 Test Results Summary ==="
+          echo "Repository Environment: ${{ env.REPO_ENVIRONMENT }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Event: ${{ github.event_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Demo Message: ${{ inputs.demo_message }}"
+          fi
+          echo ""
+          
+          # Check unit tests
+          if [[ "${{ steps.unit-tests.outcome }}" == "failure" ]]; then
+            echo "❌ Unit tests failed"
+            TESTS_FAILED=true
+          else
+            echo "✅ Unit tests passed"
+          fi
+          
+          # Check K8s tests (always run unless earlier hard-failure prevented execution)
+          if [[ "${{ steps.k8s-tests.outcome }}" == "failure" ]]; then
+            echo "❌ Kubernetes tests failed"
+            TESTS_FAILED=true
+          elif [[ "${{ steps.k8s-tests.outcome }}" == "success" ]]; then
+            echo "✅ Kubernetes tests passed"
+          else
+            echo "⏭️ Kubernetes tests skipped (earlier step likely failed)"
+          fi
+          
+          # Check smoke tests (always run unless earlier hard-failure prevented execution)
+          if [[ "${{ steps.smoke-tests.outcome }}" == "failure" ]]; then
+            echo "❌ Smoke tests failed"
+            TESTS_FAILED=true
+          elif [[ "${{ steps.smoke-tests.outcome }}" == "success" ]]; then
+            echo "✅ Smoke tests passed"
+          else
+            echo "⏭️ Smoke tests skipped (earlier step likely failed)"
+          fi
+          
+          echo ""
+          
+          # Fail the workflow if any tests failed
+          if [[ "$TESTS_FAILED" == "true" ]]; then
+            echo "❌ Pipeline failed due to test failures"
+            echo "::error title=Tests Failed::One or more test suites failed. Check the logs above for details."
+            exit 1
+          else
+            echo "✅ All tests passed successfully! 🎉"
+            echo "::notice title=All Tests Passed::Pipeline completed successfully with all tests passing."
+          fi
+
+  # Security scanning job (runs in parallel)
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
