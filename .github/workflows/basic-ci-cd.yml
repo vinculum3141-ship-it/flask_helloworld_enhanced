@@ -158,31 +158,7 @@ jobs:
         working-directory: flask-k8s
         run: bash scripts/smoke_test.sh
 
-      # --- Step 11: Upload test artifacts ---
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        if: always()  # Upload even if tests failed
-        with:
-          name: test-results-${{ github.run_number }}
-          path: |
-            flask-k8s/test-reports/
-            flask-k8s/logs/
-            flask-k8s/*.log
-          retention-days: 30
-
-      # --- Step 12: Upload deployment diagnostics ---
-      # Upload Minikube and deployment logs for troubleshooting
-      - name: Upload deployment diagnostics
-        if: always()  # Upload even if deployment failed
-        uses: actions/upload-artifact@v4
-        with:
-          name: minikube-deploy-logs-${{ github.run_number }}
-          path: |
-            flask-k8s/logs/
-            flask-k8s/deploy.log
-          retention-days: 7
-
-      # --- Step 13: Cleanup (Always Runs) ---
+  # --- Step 11: Cleanup (Always Runs) ---
       # This step runs regardless of previous step failures to ensure resource cleanup
       - name: Cleanup Minikube resources
         if: always()  # Always run cleanup, even if previous steps failed
@@ -190,7 +166,7 @@ jobs:
         working-directory: flask-k8s
         run: bash scripts/delete_local.sh
 
-      # --- Step 14: Report Test Results ---
+  # --- Step 12: Report Test Results ---
       # Check if any tests failed and fail the workflow accordingly
       - name: Check test results and report status
         if: always()  # Always run to properly report final status
