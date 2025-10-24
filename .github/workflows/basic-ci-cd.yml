@@ -76,7 +76,7 @@ jobs:
             image=moby/buildkit:buildx-stable-1
 
       - name: Start Minikube
-        uses: medyagh/setup-minikube@v0.0.19
+        uses: medyagh/setup-minikube@v0.0.20
         timeout-minutes: 15
         with:
           minikube-version: 1.32.0
