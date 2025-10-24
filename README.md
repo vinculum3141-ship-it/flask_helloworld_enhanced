@@ -47,7 +47,7 @@ pip install -r flask-k8s/app/requirements.txt pytest requests yamllint
 ```
 
 **Run Validation Tests**    
-For convencience these are captured in various validation scripts for easy execution
+For convenience these are captured in various validation scripts for easy execution
 ```
 # Repository validation
 bash validate-repo-structure.sh
