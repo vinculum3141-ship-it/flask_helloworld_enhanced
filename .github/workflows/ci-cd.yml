@@ -24,6 +24,11 @@ on:
         required: false
         default: true
         type: boolean
+      unit_tests_only:
+        description: 'Run unit tests only (skip deploy/K8s/smoke)'
+        required: false
+        default: false
+        type: boolean
       demo_message:
         description: 'Custom message for demo (optional)'
         required: false
@@ -107,6 +112,7 @@ jobs:
 
       # Prepare buildx cache directories so build works even without a restored cache
       - name: Prepare buildx cache dirs
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.unit_tests_only != true }}
         run: mkdir -p /tmp/.buildx-cache /tmp/.buildx-cache-new
 
       # Caching note:
@@ -117,7 +123,7 @@ jobs:
       # The restore step is kept here for future use if we switch to a cache-capable driver; it is guarded and non-blocking.
       # Safe Docker layer cache restore (optional). Guarded so it won't fail on forks or when cache is unavailable.
       - name: Restore Docker layer cache (safe)
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'workflow_dispatch' || inputs.unit_tests_only != true) }}
         uses: actions/cache@v4
         continue-on-error: true
         with:
@@ -158,7 +164,7 @@ jobs:
       # --- Step 6: Deploy app (always deploy except for PRs) ---
       - name: Deploy app
         timeout-minutes: 60
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.unit_tests_only != true) }}
         working-directory: flask-k8s
         run: |
           set -euxo pipefail
@@ -184,7 +190,7 @@ jobs:
 
       # --- Step 7: Wait for deployment readiness ---
       - name: Wait for deployment to be ready
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.unit_tests_only != true) }}
         timeout-minutes: 10
         run: |
           echo "Waiting for pods to be ready..."
@@ -201,7 +207,7 @@ jobs:
       # --- Step 9: Run Kubernetes tests (skip for PRs) ---
       - name: Run Kubernetes tests
         id: k8s-tests
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.unit_tests_only != true) }}
         timeout-minutes: 20
         continue-on-error: true  # Don't stop workflow if K8s tests fail
         working-directory: flask-k8s
@@ -211,7 +217,7 @@ jobs:
       # Skip for PRs, runs for pushes and manual triggers (unless disabled)
       - name: Run smoke tests
         id: smoke-tests
-        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.run_smoke_tests == true) }}
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || (inputs.run_smoke_tests == true && inputs.unit_tests_only != true)) }}
         timeout-minutes: 15
         continue-on-error: true  # Don't stop workflow if smoke tests fail
         working-directory: flask-k8s
@@ -261,6 +267,8 @@ jobs:
           echo "Event: ${{ github.event_name }}"
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "🚀 PR Mode: Running unit tests only (fast validation)"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.unit_tests_only }}" == "true" ]]; then
+            echo "🧪 Manual Mode (unit-tests-only): Skipping deployment, Kubernetes, and smoke tests"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "Demo Message: ${{ inputs.demo_message }}"
           fi
@@ -274,9 +282,11 @@ jobs:
             echo "✅ Unit tests passed"
           fi
           
-          # Check K8s tests (skipped for PRs)
+          # Check K8s tests (skipped for PRs and unit-tests-only manual runs)
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "⏭️ Kubernetes tests skipped (PR mode - unit tests only)"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.unit_tests_only }}" == "true" ]]; then
+            echo "⏭️ Kubernetes tests skipped (manual unit-tests-only mode)"
           elif [[ "${{ steps.k8s-tests.outcome }}" == "failure" ]]; then
             echo "❌ Kubernetes tests failed"
             TESTS_FAILED=true
@@ -284,9 +294,11 @@ jobs:
             echo "✅ Kubernetes tests passed"
           fi
           
-          # Check smoke tests (skipped for PRs and when manually disabled)
+          # Check smoke tests (skipped for PRs, unit-tests-only, and when manually disabled)
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "⏭️ Smoke tests skipped (PR mode - unit tests only)"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.unit_tests_only }}" == "true" ]]; then
+            echo "⏭️ Smoke tests skipped (manual unit-tests-only mode)"
           elif [[ "${{ steps.smoke-tests.outcome }}" == "failure" ]]; then
             echo "❌ Smoke tests failed"
             TESTS_FAILED=true
