@@ -1,4 +1,15 @@
-name: Flask CI/CD Pipeline
+# ---------------------------------------------------------------------------------
+# NOTE: Nested workflow (reference only)
+# This file lives under `flask-k8s/.github/workflows/` and is NOT executed by
+# GitHub Actions. Only workflows in the repository root at `.github/workflows/`
+# are picked up automatically.
+#
+# Use this as a template or example. To run it:
+#   1) Move it to the repo root at `.github/workflows/`, or
+#   2) Convert it to a reusable workflow by replacing `on:` with `workflow_call:`
+#      and calling it from a root workflow with `uses: ./.github/workflows/<file>.yml`.
+# ---------------------------------------------------------------------------------
+name: Flask CI/CD Pipeline (nested reference – not executed)
 
 # Pipeline Triggers - defines when this workflow will run
 on:
@@ -37,7 +48,7 @@ on:
 # Environment variables available to all jobs
 env:
   PYTHON_VERSION: "3.11"
-  DOCKER_IMAGE_NAME: flask-k8s-app
+  DOCKER_IMAGE_NAME: hello-flask
   REGISTRY: docker.io
 
 jobs:
@@ -59,33 +70,56 @@ jobs:
     steps:
       # --- Step 1: Checkout the repo ---
       - name: Checkout repository
-        uses: actions/checkout@v4  # Updated to latest version
+        uses: actions/checkout@v5  # Updated to latest major version
         timeout-minutes: 5
 
       # --- Step 2: Setup Python with dependency caching ---
       - name: Set up Python
-        uses: actions/setup-python@v5  # Updated to latest version
+        uses: actions/setup-python@v6  # Updated to latest major version
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'  # Automatically cache pip dependencies
-          cache-dependency-path: 'app/requirements.txt'
 
-      # --- Step 3: Install dependencies (now with caching) ---
-      - name: Install Python dependencies
+      # Safe pip cache restore (optional). Guarded so it won't fail on forks or when cache is unavailable.
+      - name: Restore pip cache (safe)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('app/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # Safe Python virtualenv restore. If cache is unavailable or from a fork, this is skipped and the next step will create the venv.
+      - name: Restore Python virtualenv (safe)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-py${{ env.PYTHON_VERSION }}-${{ hashFiles('app/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-py${{ env.PYTHON_VERSION }}-
+
+      # --- Step 3: Install dependencies (use venv) ---
+      - name: Install Python dependencies (venv)
         timeout-minutes: 10
         run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+          source .venv/bin/activate
           pip install --upgrade pip
           pip install -r app/requirements.txt pytest requests
         
       # --- Step 4: Setup Docker & Minikube ---
-      - name: Setup Docker with caching
-        uses: docker/setup-buildx-action@v3  # Updated to latest version
+      - name: Setup Docker
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
           driver-opts: |
             image=moby/buildkit:buildx-stable-1
 
       - name: Start Minikube
-        uses: medyagh/setup-minikube@v0.0.16  # Pinned to stable version
+        uses: medyagh/setup-minikube@e3c7f79eb1e997eabccc536a6cf318a2b0fe19d9 # v0.0.20
         timeout-minutes: 10
         with:
           minikube-version: 1.32.0
@@ -94,31 +128,40 @@ jobs:
           cpus: 2
           memory: 4g
           
-      # --- Step 5: Setup Docker layer caching ---
-      - name: Setup Docker layer caching
+      # --- Step 5: Docker layer caching (guarded) ---
+      # Prepare buildx cache directories so build works even without a restored cache
+      - name: Prepare buildx cache dirs
+        run: mkdir -p /tmp/.buildx-cache /tmp/.buildx-cache-new
+
+      - name: Setup Docker layer caching (safe)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: /tmp/.buildx-cache
           key: ${{ runner.os }}-buildx-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-buildx-
 
+      # Caching note:
+      # We point the Docker CLI at Minikube's docker daemon (eval "$(minikube -p minikube docker-env)").
+      # This uses the buildx "docker" driver, which DOES NOT support exporting/importing cache to a local directory
+      # (type=local). Attempting to use --cache-to/--cache-from with type=local causes buildx to exit with:
+      #   "Cache export is not supported for the docker driver. Switch to a different driver, or turn on the containerd image store..."
+      # The restore step is kept here for future use if we switch to a cache-capable driver; it is guarded and non-blocking.
       # --- Step 6: Build Docker Image ---
       - name: Build Docker image
         timeout-minutes: 15
         run: |
-          # Use buildx for better caching
-          docker buildx build \
-            --cache-from type=local,src=/tmp/.buildx-cache \
-            --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
-            --load \
+          set -euxo pipefail
+          echo "Configuring shell to use Minikube's docker daemon"
+          eval "$(minikube -p minikube docker-env)"
+
+          # Build Docker image WITHOUT buildx cache flags for compatibility with Minikube docker driver
+          docker build \
             -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
             -t ${{ env.DOCKER_IMAGE_NAME }}:latest \
             app/
-          
-          # Move cache to avoid ever-growing cache
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       # --- Step 7: Deploy app (skip for PRs) ---
       - name: Deploy app
@@ -132,7 +175,7 @@ jobs:
         timeout-minutes: 5
         run: |
           echo "Waiting for pods to be ready..."
-          kubectl wait --for=condition=ready pod -l app=flask-k8s-app --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=hello-flask --timeout=300s
           
       # --- Step 9: Run Unit Tests ---
       - name: Run unit tests
@@ -144,6 +187,7 @@ jobs:
       # --- Step 10: Run Kubernetes-level tests ---
       - name: Run Kubernetes tests
         id: k8s-tests
+        if: ${{ github.event_name != 'pull_request' }}
         timeout-minutes: 15
         continue-on-error: true  # Don't stop workflow if K8s tests fail
         run: bash scripts/k8s_tests.sh
@@ -153,7 +197,7 @@ jobs:
       # Condition: Always run unless manually triggered with run_smoke_tests=false
       - name: Run smoke tests
         id: smoke-tests
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_smoke_tests == true }}
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.run_smoke_tests == true) }}
         timeout-minutes: 10
         continue-on-error: true  # Don't stop workflow if smoke tests fail
         run: bash scripts/smoke_test.sh
@@ -238,10 +282,23 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-        
+        uses: actions/checkout@v5
+
+      # Cache Trivy vulnerability database to speed up scans (safe)
+      - name: Restore Trivy DB cache (safe)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: ~/.cache/trivy
+          key: ${{ runner.os }}-trivy-db
+          restore-keys: |
+            ${{ runner.os }}-trivy-
+
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.28.0
+        env:
+          TRIVY_CACHE_DIR: ~/.cache/trivy
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
