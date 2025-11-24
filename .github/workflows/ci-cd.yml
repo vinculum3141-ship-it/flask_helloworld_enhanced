@@ -61,7 +61,7 @@ jobs:
     steps:
       # --- Step 1: Checkout the repo ---
       - name: Checkout repository
-        uses: actions/checkout@v5  # Updated to latest major version
+        uses: actions/checkout@v6  # Updated to latest major version
         timeout-minutes: 5
 
       # --- Step 2: Setup Python ---
@@ -332,7 +332,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       # Cache Trivy vulnerability database to speed up scans (safe)
       - name: Restore Trivy DB cache (safe)
