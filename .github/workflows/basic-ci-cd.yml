@@ -51,7 +51,7 @@ jobs:
     steps:
       # --- Step 1: Checkout the repo ---
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         timeout-minutes: 5
 
       # --- Step 2: Setup Python ---
@@ -233,7 +233,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@0.33.1
