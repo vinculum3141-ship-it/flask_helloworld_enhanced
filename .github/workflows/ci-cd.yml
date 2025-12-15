@@ -73,7 +73,7 @@ jobs:
       # Safe pip cache restore (optional). Guarded so it won't fail on forks or when cache is unavailable.
       - name: Restore pip cache (safe)
         if: ${{ env.ACTIONS_CACHE_URL != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: true
         with:
           path: ~/.cache/pip
@@ -84,7 +84,7 @@ jobs:
       # Safe Python virtualenv restore. If cache is unavailable or from a fork, this is skipped and the next step will create the venv.
       - name: Restore Python virtualenv (safe)
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: true
         with:
           path: flask-k8s/.venv
@@ -124,7 +124,7 @@ jobs:
       # Safe Docker layer cache restore (optional). Guarded so it won't fail on forks or when cache is unavailable.
       - name: Restore Docker layer cache (safe)
         if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'workflow_dispatch' || inputs.unit_tests_only != true) }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: true
         with:
           path: /tmp/.buildx-cache
@@ -337,7 +337,7 @@ jobs:
       # Cache Trivy vulnerability database to speed up scans (safe)
       - name: Restore Trivy DB cache (safe)
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: true
         with:
           path: ~/.cache/trivy
