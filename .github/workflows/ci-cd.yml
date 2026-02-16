@@ -349,7 +349,7 @@ jobs:
         env:
           TRIVY_CACHE_DIR: ~/.cache/trivy
         # uses: aquasecurity/trivy-action@0.28.0  # previous version (commented)
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # 0.33.1
+        uses: aquasecurity/trivy-action@c1824fd6edce30d7ab345a9989de00bbd46ef284 # 0.34.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
